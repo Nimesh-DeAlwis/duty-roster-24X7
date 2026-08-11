@@ -29,7 +29,6 @@ export default function TopNav() {
         </div>
         <div>
           <div className="brand-title">Duty Roster</div>
-          <div className="brand-sub">Wing24x7 · Support Scheduling</div>
         </div>
       </div>
       <nav className="topbar-nav">

@@ -184,6 +184,12 @@ export default function RosterEditor() {
     if (!tableRef.current) return;
     setStatus("Generating image...");
     try {
+      // html-to-image clones the DOM tree; a React-controlled <input>'s live value
+      // lives only as a JS property, not a DOM attribute, so the clone comes out
+      // blank unless we mirror the value onto the attribute first.
+      tableRef.current.querySelectorAll("input").forEach((el) => {
+        el.setAttribute("value", el.value);
+      });
       const dataUrl = await toPng(tableRef.current, { pixelRatio: 2, backgroundColor: "#ffffff" });
       const link = document.createElement("a");
       link.download = `${rosterType === "shift" ? "extend" : "evening"}-roster-${startDate}.png`;
