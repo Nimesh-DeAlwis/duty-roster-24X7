@@ -2,49 +2,57 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toPng } from "html-to-image";
+import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
 
 const WEEKDAYS = [
   "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 ];
 
-const ROW_LABELS = {
-  shift: ["Shift"],
-  dedicated: ["Dedicated Person", "Stand by Person 1", "Stand by Person 2"],
+// Internal DB values stay as "shift" / "dedicated" (matches the Supabase table
+// already created) but are displayed as "Extend Roster" / "Evening Roster".
+const TYPE_META = {
+  shift: { label: "Extend Roster", short: "Extend", rows: ["Duty"] },
+  dedicated: {
+    label: "Evening Roster",
+    short: "Evening",
+    rows: ["Dedicated Person", "Stand by Person 1", "Stand by Person 2"],
+  },
 };
 
 function pad(n) {
   return String(n).padStart(2, "0");
 }
-
 function toISO(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
-
 function displayDate(date) {
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
 }
-
 function nextMonday() {
   const d = new Date();
-  const day = d.getDay(); // 0 Sun ... 6 Sat
-  const diff = day === 0 ? 1 : 8 - day; // days until next Monday
+  const day = d.getDay();
+  const diff = day === 0 ? 1 : 8 - day;
   d.setDate(d.getDate() + diff);
   return toISO(d);
 }
-
 function generateWeek(startISO) {
   const start = new Date(startISO + "T00:00:00");
   const days = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
-    days.push({ iso: toISO(d), display: displayDate(d), weekday: WEEKDAYS[d.getDay() === 0 ? 6 : d.getDay() - 1] });
+    days.push({
+      iso: toISO(d),
+      display: displayDate(d),
+      weekday: WEEKDAYS[d.getDay() === 0 ? 6 : d.getDay() - 1],
+    });
   }
   return days;
 }
 
 export default function RosterEditor() {
+  const router = useRouter();
   const [rosterType, setRosterType] = useState("shift");
   const [startDate, setStartDate] = useState(nextMonday());
   const [defaultTime, setDefaultTime] = useState("7.30pm - 11.00pm");
@@ -54,14 +62,18 @@ export default function RosterEditor() {
   const [newStaffName, setNewStaffName] = useState("");
   const [savedRosters, setSavedRosters] = useState([]);
   const [currentId, setCurrentId] = useState(null);
-  const [autoFillRow, setAutoFillRow] = useState(ROW_LABELS.shift[0]);
+  const [autoFillRow, setAutoFillRow] = useState(TYPE_META.shift.rows[0]);
   const [autoFillStartStaff, setAutoFillStartStaff] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [archiveSearch, setArchiveSearch] = useState("");
+  const [archiveFilter, setArchiveFilter] = useState("all");
+  const [showArchive, setShowArchive] = useState(false);
   const tableRef = useRef(null);
 
   const days = generateWeek(startDate);
-  const rowLabels = ROW_LABELS[rosterType];
+  const meta = TYPE_META[rosterType];
+  const rowLabels = meta.rows;
 
   const ensureEntries = useCallback((baseDays, labels, prev) => {
     const next = {};
@@ -102,7 +114,7 @@ export default function RosterEditor() {
       .from("rosters")
       .select("id, title, roster_type, start_date, updated_at")
       .order("start_date", { ascending: false })
-      .limit(25);
+      .limit(60);
     if (!error && data) setSavedRosters(data);
   }
 
@@ -146,9 +158,7 @@ export default function RosterEditor() {
       days.forEach((d, i) => {
         const staffName = staffList[(startIdx + i) % staffList.length].name;
         const value =
-          rosterType === "shift"
-            ? `${staffName} (${defaultTime})`
-            : staffName;
+          rosterType === "shift" ? `${staffName} (${defaultTime})` : staffName;
         next[d.iso] = { ...next[d.iso], [autoFillRow]: value };
       });
       return next;
@@ -166,7 +176,7 @@ export default function RosterEditor() {
     setLoading(true);
     setStatus("");
     const payload = {
-      title: title.trim() || `Roster ${displayDate(new Date(startDate + "T00:00:00"))}`,
+      title: title.trim() || `${meta.short} Roster ${displayDate(new Date(startDate + "T00:00:00"))}`,
       roster_type: rosterType,
       start_date: startDate,
       default_time: defaultTime,
@@ -208,7 +218,9 @@ export default function RosterEditor() {
     setStartDate(data.start_date);
     setDefaultTime(data.default_time || "7.30pm - 11.00pm");
     setEntries(data.entries || {});
-    setStatus("Loaded.");
+    setStatus("Loaded from archive.");
+    setShowArchive(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function deleteRoster(id) {
@@ -227,7 +239,7 @@ export default function RosterEditor() {
         backgroundColor: "#ffffff",
       });
       const link = document.createElement("a");
-      link.download = `roster-${startDate}.png`;
+      link.download = `${rosterType === "shift" ? "extend" : "evening"}-roster-${startDate}.png`;
       link.href = dataUrl;
       link.click();
       setStatus("Downloaded.");
@@ -242,185 +254,242 @@ export default function RosterEditor() {
     setStartDate(toISO(d));
   }
 
+  async function handleLogout() {
+    await fetch("/api/logout", { method: "POST" });
+    router.push("/login");
+    router.refresh();
+  }
+
+  const filteredArchive = savedRosters.filter((r) => {
+    const matchesType = archiveFilter === "all" || r.roster_type === archiveFilter;
+    const matchesSearch = r.title.toLowerCase().includes(archiveSearch.trim().toLowerCase());
+    return matchesType && matchesSearch;
+  });
+
+  const rangeLabel = `${days[0].display} — ${days[6].display}`;
+
   return (
-    <div className="app">
-      <div className="app-header">
-        <h1>Duty Roster</h1>
-        <div className="tag-toggle">
-          <button
-            className={rosterType === "shift" ? "active" : ""}
-            onClick={() => setRosterType("shift")}
-          >
-            Shift (1 row)
+    <div className="shell">
+      <header className="topbar">
+        <div className="topbar-brand">
+          <div className="brand-mark">24×7</div>
+          <div>
+            <div className="brand-title">Duty Roster</div>
+            <div className="brand-sub">Wing24x7 · Support Scheduling</div>
+          </div>
+        </div>
+        <div className="topbar-actions">
+          <button className="ghost" onClick={() => setShowArchive((s) => !s)}>
+            {showArchive ? "Back to editor" : "Old rosters"}
           </button>
-          <button
-            className={rosterType === "dedicated" ? "active" : ""}
-            onClick={() => setRosterType("dedicated")}
-          >
-            Dedicated + Standby
-          </button>
+          <button className="ghost" onClick={handleLogout}>Log out</button>
         </div>
-      </div>
+      </header>
 
-      <div className="panel">
-        <h2>Week setup</h2>
-        <div className="controls-row">
-          <div className="field">
-            <label>Roster title</label>
-            <input
-              type="text"
-              placeholder="e.g. Support Roster - Week 31"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label>Start date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-          </div>
-          {rosterType === "shift" && (
-            <div className="field">
-              <label>Default shift time</label>
-              <input
-                type="text"
-                value={defaultTime}
-                onChange={(e) => setDefaultTime(e.target.value)}
-              />
+      <main className="app">
+        {showArchive ? (
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Roster archive</h2>
+              <span className="hint">{filteredArchive.length} of {savedRosters.length} rosters</span>
             </div>
-          )}
-          <div className="field">
-            <label>&nbsp;</label>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="secondary" onClick={() => shiftWeek(-7)}>&laquo; Prev week</button>
-              <button className="secondary" onClick={() => shiftWeek(7)}>Next week &raquo;</button>
-              <button className="secondary" onClick={newRoster}>+ New</button>
+            <div className="controls-row" style={{ marginBottom: 14 }}>
+              <div className="field grow">
+                <label>Search by title</label>
+                <input
+                  type="text"
+                  placeholder="Search..."
+                  value={archiveSearch}
+                  onChange={(e) => setArchiveSearch(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label>Type</label>
+                <select value={archiveFilter} onChange={(e) => setArchiveFilter(e.target.value)}>
+                  <option value="all">All types</option>
+                  <option value="shift">Extend Roster</option>
+                  <option value="dedicated">Evening Roster</option>
+                </select>
+              </div>
             </div>
-          </div>
-        </div>
-
-        <div className="controls-row" style={{ marginTop: 14 }}>
-          <div className="field">
-            <label>Auto-fill row</label>
-            <select value={autoFillRow} onChange={(e) => setAutoFillRow(e.target.value)}>
-              {rowLabels.map((r) => (
-                <option key={r} value={r}>{r}</option>
+            <div className="roster-grid">
+              {filteredArchive.map((r) => (
+                <div className="roster-card" key={r.id}>
+                  <div className={`type-pill ${r.roster_type === "shift" ? "pill-extend" : "pill-evening"}`}>
+                    {TYPE_META[r.roster_type]?.label || r.roster_type}
+                  </div>
+                  <div className="roster-card-title">{r.title}</div>
+                  <div className="roster-card-meta">Starts {r.start_date}</div>
+                  <div className="roster-card-actions">
+                    <button className="secondary" onClick={() => loadRoster(r.id)}>Open</button>
+                    <button className="danger" onClick={() => deleteRoster(r.id)}>Delete</button>
+                  </div>
+                </div>
               ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Start rotation from</label>
-            <select value={autoFillStartStaff} onChange={(e) => setAutoFillStartStaff(e.target.value)}>
-              {staffList.map((s) => (
-                <option key={s.id} value={s.name}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>&nbsp;</label>
-            <button onClick={autoFill}>Auto-fill week (round robin)</button>
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2>Staff list</h2>
-        <div className="controls-row" style={{ marginBottom: 10 }}>
-          <div className="field">
-            <label>Add staff member</label>
-            <input
-              type="text"
-              placeholder="Name"
-              value={newStaffName}
-              onChange={(e) => setNewStaffName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addStaff()}
-            />
-          </div>
-          <button className="secondary" onClick={addStaff}>Add</button>
-        </div>
-        <div className="staff-chip-list">
-          {staffList.map((s) => (
-            <div className="staff-chip" key={s.id}>
-              {s.name}
-              <button onClick={() => removeStaff(s.id)} title="Remove">&times;</button>
+              {!filteredArchive.length && (
+                <span className="hint">No rosters match that search.</span>
+              )}
             </div>
-          ))}
-          {!staffList.length && <span className="hint">No staff yet — add names above so auto-fill can use them.</span>}
-        </div>
-      </div>
-
-      <div className="toolbar">
-        <button onClick={saveRoster} disabled={loading}>
-          {currentId ? "Update saved roster" : "Save roster"}
-        </button>
-        <button className="secondary" onClick={exportPng}>Download as PNG</button>
-        {status && <span className="hint" style={{ alignSelf: "center" }}>{status}</span>}
-      </div>
-
-      <div className="export-wrap">
-        <table className="roster-table" ref={tableRef}>
-          <thead>
-            <tr className="date-row">
-              <th></th>
-              {days.map((d) => (
-                <th key={d.iso}>{d.display}</th>
+          </section>
+        ) : (
+          <>
+            <div className="tag-toggle">
+              {Object.entries(TYPE_META).map(([key, m]) => (
+                <button
+                  key={key}
+                  className={rosterType === key ? "active" : ""}
+                  onClick={() => setRosterType(key)}
+                >
+                  {m.label}
+                </button>
               ))}
-            </tr>
-            <tr className="day-row">
-              <th></th>
-              {days.map((d) => (
-                <th key={d.iso}>{d.weekday}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rowLabels.map((label) => (
-              <tr key={label} className={label.startsWith("Stand by") ? "standby-row" : ""}>
-                <th>{label}</th>
-                {days.map((d) => (
-                  <td key={d.iso}>
+            </div>
+
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Week setup</h2>
+              </div>
+              <div className="controls-row">
+                <div className="field grow">
+                  <label>Roster title</label>
+                  <input
+                    type="text"
+                    placeholder={`e.g. ${meta.label} - Week 31`}
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>Start date</label>
+                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                </div>
+                {rosterType === "shift" && (
+                  <div className="field">
+                    <label>Default duty time</label>
                     <input
                       type="text"
-                      value={(entries[d.iso] && entries[d.iso][label]) || ""}
-                      onChange={(e) => handleCellChange(d.iso, label, e.target.value)}
-                      placeholder="-"
+                      value={defaultTime}
+                      onChange={(e) => setDefaultTime(e.target.value)}
                     />
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="hint">
-        Type directly into any cell, or use "Auto-fill week" to cycle staff names in order.
-        For the shift table, auto-fill appends the default time automatically — you can still
-        edit any cell by hand afterwards.
-      </p>
-
-      <div className="panel" style={{ marginTop: 24 }}>
-        <h2>Saved rosters</h2>
-        <div className="roster-list">
-          {savedRosters.map((r) => (
-            <div className="roster-list-item" key={r.id}>
-              <div>
-                <strong>{r.title}</strong>{" "}
-                <span className="meta">
-                  ({r.roster_type === "shift" ? "Shift" : "Dedicated"} · starts {r.start_date})
-                </span>
+                  </div>
+                )}
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="secondary" onClick={() => loadRoster(r.id)}>Open</button>
-                <button className="danger" onClick={() => deleteRoster(r.id)}>Delete</button>
+              <div className="controls-row" style={{ marginTop: 10 }}>
+                <button className="secondary" onClick={() => shiftWeek(-7)}>&laquo; Prev week</button>
+                <button className="secondary" onClick={() => shiftWeek(7)}>Next week &raquo;</button>
+                <button className="secondary" onClick={newRoster}>+ New roster</button>
+              </div>
+
+              <div className="controls-row" style={{ marginTop: 18 }}>
+                <div className="field">
+                  <label>Auto-fill row</label>
+                  <select value={autoFillRow} onChange={(e) => setAutoFillRow(e.target.value)}>
+                    {rowLabels.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Start rotation from</label>
+                  <select value={autoFillStartStaff} onChange={(e) => setAutoFillStartStaff(e.target.value)}>
+                    {staffList.map((s) => (
+                      <option key={s.id} value={s.name}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>&nbsp;</label>
+                  <button onClick={autoFill}>Auto-fill week</button>
+                </div>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <h2>Staff list</h2>
+              </div>
+              <div className="controls-row" style={{ marginBottom: 10 }}>
+                <div className="field grow">
+                  <label>Add staff member</label>
+                  <input
+                    type="text"
+                    placeholder="Name"
+                    value={newStaffName}
+                    onChange={(e) => setNewStaffName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && addStaff()}
+                  />
+                </div>
+                <button className="secondary" onClick={addStaff}>Add</button>
+              </div>
+              <div className="staff-chip-list">
+                {staffList.map((s) => (
+                  <div className="staff-chip" key={s.id}>
+                    {s.name}
+                    <button onClick={() => removeStaff(s.id)} title="Remove">&times;</button>
+                  </div>
+                ))}
+                {!staffList.length && (
+                  <span className="hint">No staff yet — add names above so auto-fill can use them.</span>
+                )}
+              </div>
+            </section>
+
+            <div className="toolbar">
+              <button onClick={saveRoster} disabled={loading}>
+                {currentId ? "Update saved roster" : "Save roster"}
+              </button>
+              <button className="secondary" onClick={exportPng}>Download as PNG</button>
+              {status && <span className="hint" style={{ alignSelf: "center" }}>{status}</span>}
+            </div>
+
+            <div className="export-wrap">
+              <div className="export-inner" ref={tableRef}>
+                <div className="export-heading">
+                  <div className="export-heading-title">{meta.label}</div>
+                  <div className="export-heading-sub">{title || `${meta.short} Roster`} &nbsp;·&nbsp; {rangeLabel}</div>
+                </div>
+                <table className="roster-table">
+                  <thead>
+                    <tr className="date-row">
+                      <th></th>
+                      {days.map((d) => (
+                        <th key={d.iso}>{d.display}</th>
+                      ))}
+                    </tr>
+                    <tr className="day-row">
+                      <th></th>
+                      {days.map((d) => (
+                        <th key={d.iso}>{d.weekday}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rowLabels.map((label) => (
+                      <tr key={label} className={label.startsWith("Stand by") ? "standby-row" : ""}>
+                        <th>{label}</th>
+                        {days.map((d) => (
+                          <td key={d.iso}>
+                            <input
+                              type="text"
+                              value={(entries[d.iso] && entries[d.iso][label]) || ""}
+                              onChange={(e) => handleCellChange(d.iso, label, e.target.value)}
+                              placeholder="-"
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-          ))}
-          {!savedRosters.length && <span className="hint">No saved rosters yet.</span>}
-        </div>
-      </div>
+            <p className="hint">
+              Type directly into any cell, or use "Auto-fill week" to cycle staff names in order.
+              The downloaded image includes the {meta.label} heading automatically.
+            </p>
+          </>
+        )}
+      </main>
     </div>
   );
 }
