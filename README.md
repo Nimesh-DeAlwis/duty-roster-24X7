@@ -1,51 +1,57 @@
 # Duty Roster
 
-A weekly duty roster tool with a login screen, two roster formats, a Supabase
-backend, and one-click PNG export — deployable free on Vercel.
+Full internal scheduling tool: login-protected, brand-colored, with a dashboard,
+employee master, roster archive with preview, copy/duplicate tools, and drag & drop.
 
-## What's in this version
+## What's new in this version
 
-- **Login screen** — nothing is visible until signing in.
+- **Brand color** — theme now uses `#083344` (dark teal) throughout, with your
+  24×7 Retail logo in the top bar and login screen.
+- **Dashboard** (`/`) — total people scheduled today, Extend/Evening roster counts,
+  today's Dedicated Person / Standby 1 / Standby 2, upcoming saved roster count,
+  active staff count, and quick-action buttons.
+- **Create Roster** (`/roster`) — the editor, now with:
+  - **Copy & duplicate tools**: copy the day before this week into Monday, copy
+    last week's whole roster, or duplicate this week to a different date range
+    (saves it as a brand-new roster automatically).
+  - **Drag & drop**: drag a staff chip straight onto a roster cell to assign them;
+    drag a filled cell's ⋮⋮ handle to move that person to another slot
+    (Dedicated ↔ Standby 1 ↔ Standby 2) or to a different date.
+- **Old Rosters** (`/roster?view=archive`) — search/filter archive; **Preview**
+  opens the roster as a popup with the same styled heading as the download, plus
+  a **Download as PNG** button and an **Edit this roster** button.
+- **Employee Master** (`/employees`) — add, edit, and remove employees with
+  name, employee ID, phone, and email. This list feeds both roster types' staff
+  chips and auto-fill rotation.
+- **Login screen** — unchanged credentials:
   - Username: `PROJECTADMIN`
   - Password: `ADMIN2026@247`
-  - (Change these any time in your environment variables — see below. They are
-    never sent to the browser; the check happens on the server.)
-- **Two roster types**, switchable with a pill toggle at the top:
-  - **Extend Roster** — one row per day, e.g. `Nimesh (7.30pm - 11.00pm)`. No standby rows.
-  - **Evening Roster** — three rows: Dedicated Person / Stand by Person 1 / Stand by Person 2.
-- **Auto date generation** — pick a start date, the 7 date + weekday columns build themselves.
-- **Auto-fill (round robin)** — cycles your staff list into any row automatically; still editable by hand after.
-- **PNG export with heading** — the downloaded image includes an "Extend Roster" or
-  "Evening Roster" title + the date range above the table, not just the bare grid.
-- **Roster archive** — "Old rosters" button opens a searchable, filterable grid of every
-  roster you've ever saved (filter by type, search by title), with Open/Delete per card.
-- **Modern UI** — dark green branded top bar, card-based layout, pill toggles, rounded corners.
 
 ---
 
-## 1. Supabase — already set up
+## 1. Supabase — run the migration if upgrading an existing project
 
-If you ran `supabase/schema.sql` before, **nothing needs to change** — Extend/Evening reuse
-the same `shift` / `dedicated` values under the hood, just relabelled in the interface.
-Skip straight to step 2.
+If your Supabase project already has the `staff` and `rosters` tables from
+before, you only need to add the new Employee Master columns:
 
-If this is a fresh Supabase project: SQL Editor → New query → paste `supabase/schema.sql` → Run.
+SQL Editor → New query → paste `supabase/migration_v2_employee_master.sql` → Run.
+
+(It uses `IF NOT EXISTS`, so it's safe to run even twice.)
+
+Brand new Supabase project? Just run `supabase/schema.sql` — it doesn't yet include
+the new columns, so also run the migration file right after.
 
 ## 2. Environment variables
 
-Copy `.env.local.example` to `.env.local` for local testing, or set these directly in Vercel
-(Project → Settings → Environment Variables) for the live site:
+No changes from before — same four values in `.env.local` / Vercel:
 
 | Name | Value |
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | your Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | your Supabase anon public key |
-| `ADMIN_USERNAME` | `PROJECTADMIN` (or your own) |
-| `ADMIN_PASSWORD` | `ADMIN2026@247` (or your own) |
-| `SESSION_TOKEN` | any long random string — used to sign the login session. One is pre-filled in `.env.local.example`; generate your own with `openssl rand -hex 32` if you'd rather. |
-
-**Never commit `.env.local` to GitHub** — it's already listed in `.gitignore`. On Vercel,
-paste these values into the dashboard directly instead.
+| `ADMIN_USERNAME` | `PROJECTADMIN` |
+| `ADMIN_PASSWORD` | `ADMIN2026@247` |
+| `SESSION_TOKEN` | any long random string (see `.env.local.example`) |
 
 ## 3. Run locally (optional)
 
@@ -54,33 +60,43 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 — you'll land on the login screen first.
-
-## 4. Deploy / redeploy on Vercel
-
-If already connected to your GitHub repo, just:
+## 4. Deploy
 
 ```bash
 git add .
-git commit -m "Add login, extend/evening rosters, archive, new UI"
+git commit -m "Add dashboard, employee master, copy tools, drag & drop, branding"
 git push
 ```
 
-Vercel redeploys automatically. If the four new environment variables
-(`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SESSION_TOKEN`, plus the existing Supabase ones)
-aren't already set in the Vercel dashboard, add them under
-**Project → Settings → Environment Variables**, then **Redeploy** from the Deployments tab
-so the new variables take effect.
+Vercel redeploys automatically from GitHub. No new environment variables are
+needed for this update — just the Supabase migration above.
 
 ---
 
-## Notes
+## Notes on the copy/duplicate tools
 
-- The login is a simple shared username/password for the team, checked server-side via a
-  Next.js API route, with an httpOnly session cookie (7-day expiry). It's appropriate for an
-  internal tool but isn't per-user accounts — if you later want individual logins per staff
-  member, that's a natural next step (Supabase Auth).
-- The `staff` table still feeds the auto-fill rotation for both roster types.
-- Want more? Ideas not yet built: auto-send the week's roster by email/WhatsApp, warn if the
-  same person is scheduled two days running, or separate tabs per location (Sri Lanka branches
-  vs Cambodia outlets).
+- **Copy previous day → Monday**: looks for a saved roster (same type) covering
+  the day right before your selected week starts, and copies just that single
+  day's assignments into this week's Monday.
+- **Copy last week's roster**: looks for a saved roster (same type) starting
+  exactly 7 days earlier, and copies its whole week in, matched by weekday.
+- **Duplicate this week to another date range**: takes whatever is currently on
+  screen (typed, auto-filled, or drag-and-dropped) and saves it as a brand-new
+  roster starting on whatever date you pick — handy for "same people, different
+  week."
+
+## Notes on drag & drop
+
+- Staff chips in the "Staff list" panel are draggable — drop one on any roster
+  cell to fill it in (Extend Roster cells automatically get the default duty
+  time appended).
+- Any filled cell shows a small ⋮⋮ handle — drag that handle to another cell to
+  move that person (works between Dedicated/Standby rows on the same day, or
+  across different dates).
+
+## Ideas for more features (not built yet)
+
+- Email/WhatsApp auto-send of the week's roster.
+- Conflict warnings (same person scheduled two days running).
+- Multi-location tabs (Sri Lanka branches vs Cambodia outlets).
+- Per-user login accounts instead of one shared admin login.

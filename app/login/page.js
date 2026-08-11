@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -38,7 +39,9 @@ export default function LoginPage() {
     <div className="login-screen">
       <div className="login-card">
         <div className="login-brand">
-          <div className="login-logo">24×7</div>
+          <div className="login-logo">
+            <Image src="/logo.png" alt="24x7 Retail" width={40} height={40} style={{ objectFit: "contain" }} />
+          </div>
           <div>
             <h1>Duty Roster</h1>
             <p>Sign in to manage this week&apos;s roster</p>
