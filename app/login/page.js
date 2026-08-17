@@ -37,6 +37,11 @@ export default function LoginPage() {
 
   return (
     <div className="login-screen">
+      <div className="login-watermark" aria-hidden="true" />
+      <div className="login-watermark-logo" aria-hidden="true">
+        <Image src="/logo.png" alt="" width={640} height={640} style={{ objectFit: "contain" }} />
+      </div>
+
       <div className="login-card">
         <div className="login-brand">
           <div className="login-logo">

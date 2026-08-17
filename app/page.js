@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { toPng } from "html-to-image";
 import { supabase } from "../lib/supabaseClient";
-import { TYPE_META, todayISO, addDaysISO, generateWeek } from "../lib/dateUtils";
+import { TYPE_META, todayISO, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
+import { exportNodeAsPng } from "../lib/exportImage";
 import TopNav from "../components/TopNav";
 
 export default function DashboardPage() {
@@ -48,22 +48,23 @@ export default function DashboardPage() {
     let dedicatedPerson = "-", standby1 = "-", standby2 = "-";
 
     extendToday.forEach((r) => {
-      if (r.entries?.[today]?.["Duty"]) peopleToday += 1;
+      peopleToday += asList(r.entries?.[today]?.["Duty"]).length;
     });
     eveningToday.forEach((r) => {
-      const d = r.entries?.[today]?.["Dedicated Person"];
-      const s1 = r.entries?.[today]?.["Stand by Person 1"];
-      const s2 = r.entries?.[today]?.["Stand by Person 2"];
-      if (d) { peopleToday += 1; if (dedicatedPerson === "-") dedicatedPerson = d; }
-      if (s1) { peopleToday += 1; if (standby1 === "-") standby1 = s1; }
-      if (s2) { peopleToday += 1; if (standby2 === "-") standby2 = s2; }
+      const d = asList(r.entries?.[today]?.["Dedicated Person"]);
+      const s1 = asList(r.entries?.[today]?.["Stand by Person 1"]);
+      const s2 = asList(r.entries?.[today]?.["Stand by Person 2"]);
+      peopleToday += d.length + s1.length + s2.length;
+      if (d.length && dedicatedPerson === "-") dedicatedPerson = d.join(", ");
+      if (s1.length && standby1 === "-") standby1 = s1.join(", ");
+      if (s2.length && standby2 === "-") standby2 = s2.join(", ");
     });
 
     setStats({
       peopleToday,
       extendCount: extendToday.length,
       eveningCount: eveningToday.length,
-      dedicatedPerson, standby1, standby2,
+      dedicatedPerson,
       upcomingCount: upcomingCount || 0,
       totalStaff: totalStaff || 0,
     });
@@ -73,12 +74,7 @@ export default function DashboardPage() {
   }
 
   async function downloadMini(ref, roster) {
-    if (!ref.current) return;
-    const dataUrl = await toPng(ref.current, { pixelRatio: 2, backgroundColor: "#ffffff" });
-    const link = document.createElement("a");
-    link.download = `${roster.roster_type === "shift" ? "extend" : "evening"}-roster-${roster.start_date}.png`;
-    link.href = dataUrl;
-    link.click();
+    await exportNodeAsPng(ref.current, `${roster.roster_type === "shift" ? "extend" : "evening"}-roster-${roster.start_date}.png`);
   }
 
   const today = todayISO();
@@ -198,7 +194,7 @@ function RosterPreviewCard({ title, roster, innerRef, onDownload, today, badgeCo
                       <th>{label}</th>
                       {days.map((d) => (
                         <td key={d.iso} className={d.iso === today ? "is-today" : ""}>
-                          {roster.entries?.[d.iso]?.[label] || "-"}
+                          {asList(roster.entries?.[d.iso]?.[label]).join(", ") || "-"}
                         </td>
                       ))}
                     </tr>

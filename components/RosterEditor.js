@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { toPng } from "html-to-image";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
-import { TYPE_META, nextMonday, addDaysISO, generateWeek } from "../lib/dateUtils";
+import { TYPE_META, nextMonday, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
+import { exportNodeAsPng } from "../lib/exportImage";
 import TopNav from "./TopNav";
 
 export default function RosterEditor() {
@@ -27,8 +27,10 @@ export default function RosterEditor() {
   const [showArchive, setShowArchive] = useState(false);
   const [duplicateTarget, setDuplicateTarget] = useState("");
   const [previewRoster, setPreviewRoster] = useState(null);
+  const [role, setRole] = useState(null);
   const tableRef = useRef(null);
   const previewRef = useRef(null);
+  const dragRef = useRef(null);
 
   const days = generateWeek(startDate);
   const meta = TYPE_META[rosterType];
@@ -38,19 +40,19 @@ export default function RosterEditor() {
     if (searchParams.get("view") === "archive") setShowArchive(true);
   }, [searchParams]);
 
-  const ensureEntries = useCallback((baseDays, labels, prev) => {
+  const normalizeEntries = useCallback((baseDays, labels, raw) => {
     const next = {};
     for (const d of baseDays) {
       next[d.iso] = {};
       for (const label of labels) {
-        next[d.iso][label] = (prev[d.iso] && prev[d.iso][label]) || "";
+        next[d.iso][label] = asList(raw?.[d.iso]?.[label]);
       }
     }
     return next;
   }, []);
 
   useEffect(() => {
-    setEntries((prev) => ensureEntries(days, rowLabels, prev));
+    setEntries((prev) => normalizeEntries(days, rowLabels, prev));
     setAutoFillRow(rowLabels[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startDate, rosterType]);
@@ -58,14 +60,12 @@ export default function RosterEditor() {
   useEffect(() => {
     loadStaff();
     loadRosterList();
+    fetch("/api/me").then((r) => r.json()).then((d) => setRole(d.role)).catch(() => {});
   }, []);
 
   async function loadStaff() {
     const { data, error } = await supabase
-      .from("staff")
-      .select("*")
-      .eq("active", true)
-      .order("sort_order", { ascending: true });
+      .from("staff").select("*").eq("active", true).order("sort_order", { ascending: true });
     if (!error && data) {
       setStaffList(data);
       if (data.length && !autoFillStartStaff) setAutoFillStartStaff(data[0].name);
@@ -81,11 +81,37 @@ export default function RosterEditor() {
     if (!error && data) setSavedRosters(data);
   }
 
-  function handleCellChange(dateISO, rowLabel, value) {
-    setEntries((prev) => ({
-      ...prev,
-      [dateISO]: { ...prev[dateISO], [rowLabel]: value },
-    }));
+  // ---------- Cell value helpers (array-of-staff per cell) ----------
+
+  function addToCell(dateISO, rowLabel, value) {
+    setEntries((prev) => {
+      const list = prev[dateISO]?.[rowLabel] || [];
+      if (list.includes(value)) return prev;
+      return { ...prev, [dateISO]: { ...prev[dateISO], [rowLabel]: [...list, value] } };
+    });
+  }
+
+  function removeFromCell(dateISO, rowLabel, index) {
+    setEntries((prev) => {
+      const list = [...(prev[dateISO]?.[rowLabel] || [])];
+      list.splice(index, 1);
+      return { ...prev, [dateISO]: { ...prev[dateISO], [rowLabel]: list } };
+    });
+  }
+
+  function moveChip(srcDate, srcRow, srcIndex, targetDate, targetRow) {
+    if (srcDate === targetDate && srcRow === targetRow) return;
+    setEntries((prev) => {
+      const next = { ...prev };
+      const srcList = [...(next[srcDate]?.[srcRow] || [])];
+      const [val] = srcList.splice(srcIndex, 1);
+      if (val === undefined) return prev;
+      next[srcDate] = { ...next[srcDate], [srcRow]: srcList };
+      const targetList = [...(next[targetDate]?.[targetRow] || [])];
+      if (!targetList.includes(val)) targetList.push(val);
+      next[targetDate] = { ...next[targetDate], [targetRow]: targetList };
+      return next;
+    });
   }
 
   function autoFill() {
@@ -99,7 +125,7 @@ export default function RosterEditor() {
       days.forEach((d, i) => {
         const staffName = staffList[(startIdx + i) % staffList.length].name;
         const value = rosterType === "shift" ? `${staffName} (${defaultTime})` : staffName;
-        next[d.iso] = { ...next[d.iso], [autoFillRow]: value };
+        next[d.iso] = { ...next[d.iso], [autoFillRow]: [value] };
       });
       return next;
     });
@@ -112,9 +138,39 @@ export default function RosterEditor() {
     setStatus("");
   }
 
+  async function logAudit(rosterId, rosterTitle, action, previousEntries, newEntries) {
+    let changes = [];
+    if (action === "updated" && previousEntries) {
+      const allDates = new Set([...Object.keys(previousEntries || {}), ...Object.keys(newEntries || {})]);
+      allDates.forEach((date) => {
+        const prevRow = previousEntries?.[date] || {};
+        const newRow = newEntries?.[date] || {};
+        const allRows = new Set([...Object.keys(prevRow), ...Object.keys(newRow)]);
+        allRows.forEach((row) => {
+          const prevVal = asList(prevRow[row]).join(", ") || "-";
+          const newVal = asList(newRow[row]).join(", ") || "-";
+          if (prevVal !== newVal) changes.push({ date, row, previous: prevVal, new: newVal });
+        });
+      });
+      if (!changes.length) return; // nothing actually changed, skip noise
+    }
+    await supabase.from("audit_log").insert({
+      roster_id: rosterId,
+      roster_title: rosterTitle,
+      action,
+      actor: role === "admin" ? "PROJECTADMIN" : "Unknown",
+      changes,
+    });
+  }
+
   async function saveRoster() {
     setLoading(true);
     setStatus("");
+    let previousEntries = null;
+    if (currentId) {
+      const { data: existing } = await supabase.from("rosters").select("entries").eq("id", currentId).single();
+      previousEntries = existing?.entries || null;
+    }
     const payload = {
       title: title.trim() || `${meta.short} Roster ${days[0].display}`,
       roster_type: rosterType,
@@ -124,19 +180,21 @@ export default function RosterEditor() {
       entries,
     };
     let error;
+    let savedId = currentId;
     if (currentId) {
       ({ error } = await supabase.from("rosters").update(payload).eq("id", currentId));
     } else {
       const { data, error: insertError } = await supabase
         .from("rosters").insert(payload).select().single();
       error = insertError;
-      if (!error && data) setCurrentId(data.id);
+      if (!error && data) { setCurrentId(data.id); savedId = data.id; }
     }
     setLoading(false);
     if (error) {
       setStatus(`Save failed: ${error.message}`);
     } else {
       setStatus("Saved.");
+      await logAudit(savedId, payload.title, currentId ? "updated" : "created", previousEntries, entries);
       loadRosterList();
     }
   }
@@ -155,12 +213,14 @@ export default function RosterEditor() {
     const data = await loadRosterFull(id);
     setLoading(false);
     if (!data) return;
+    const dRows = TYPE_META[data.roster_type].rows;
+    const dDays = generateWeek(data.start_date);
     setCurrentId(data.id);
     setTitle(data.title || "");
     setRosterType(data.roster_type);
     setStartDate(data.start_date);
     setDefaultTime(data.default_time || "7.30pm - 11.00pm");
-    setEntries(data.entries || {});
+    setEntries(normalizeEntries(dDays, dRows, data.entries || {}));
     setStatus("Loaded from archive.");
     setShowArchive(false);
     setPreviewRoster(null);
@@ -174,27 +234,18 @@ export default function RosterEditor() {
 
   async function deleteRoster(id) {
     if (!confirm("Delete this saved roster? This cannot be undone.")) return;
+    const target = savedRosters.find((r) => r.id === id);
     await supabase.from("rosters").delete().eq("id", id);
+    await logAudit(id, target?.title || "Untitled roster", "deleted", null, null);
     if (id === currentId) newRoster();
     if (previewRoster?.id === id) setPreviewRoster(null);
     loadRosterList();
   }
 
   async function exportPng() {
-    if (!tableRef.current) return;
     setStatus("Generating image...");
     try {
-      // html-to-image clones the DOM tree; a React-controlled <input>'s live value
-      // lives only as a JS property, not a DOM attribute, so the clone comes out
-      // blank unless we mirror the value onto the attribute first.
-      tableRef.current.querySelectorAll("input").forEach((el) => {
-        el.setAttribute("value", el.value);
-      });
-      const dataUrl = await toPng(tableRef.current, { pixelRatio: 2, backgroundColor: "#ffffff" });
-      const link = document.createElement("a");
-      link.download = `${rosterType === "shift" ? "extend" : "evening"}-roster-${startDate}.png`;
-      link.href = dataUrl;
-      link.click();
+      await exportNodeAsPng(tableRef.current, `${rosterType === "shift" ? "extend" : "evening"}-roster-${startDate}.png`);
       setStatus("Downloaded.");
     } catch (err) {
       setStatus(`Export failed: ${err.message}`);
@@ -202,12 +253,10 @@ export default function RosterEditor() {
   }
 
   async function downloadPreview() {
-    if (!previewRef.current) return;
-    const dataUrl = await toPng(previewRef.current, { pixelRatio: 2, backgroundColor: "#ffffff" });
-    const link = document.createElement("a");
-    link.download = `${previewRoster.roster_type === "shift" ? "extend" : "evening"}-roster-${previewRoster.start_date}.png`;
-    link.href = dataUrl;
-    link.click();
+    await exportNodeAsPng(
+      previewRef.current,
+      `${previewRoster.roster_type === "shift" ? "extend" : "evening"}-roster-${previewRoster.start_date}.png`
+    );
   }
 
   function shiftWeek(deltaDays) {
@@ -215,6 +264,12 @@ export default function RosterEditor() {
   }
 
   // ---------- Copy / Duplicate tools ----------
+
+  function asListMap(dayObj, labels) {
+    const out = {};
+    labels.forEach((label) => { out[label] = asList(dayObj?.[label]); });
+    return out;
+  }
 
   async function copyLastWeek() {
     const prevStart = addDaysISO(startDate, -7);
@@ -229,7 +284,7 @@ export default function RosterEditor() {
     setEntries((prev) => {
       const next = { ...prev };
       days.forEach((d, i) => {
-        next[d.iso] = { ...(data.entries?.[prevDays[i].iso] || {}) };
+        next[d.iso] = { ...asListMap(data.entries?.[prevDays[i].iso], rowLabels) };
       });
       return next;
     });
@@ -249,7 +304,7 @@ export default function RosterEditor() {
     const firstDay = days[0].iso;
     setEntries((prev) => ({
       ...prev,
-      [firstDay]: { ...data.entries[prevDayISO] },
+      [firstDay]: { ...asListMap(data.entries[prevDayISO], rowLabels) },
     }));
     setStatus(`Copied ${prevDayISO} into ${firstDay}.`);
   }
@@ -282,46 +337,61 @@ export default function RosterEditor() {
     }
   }
 
-  // ---------- Drag & drop ----------
+  // ---------- Drag & drop (pointer-events based — works with mouse, touch, and pen,
+  // unlike native HTML5 drag-and-drop which is unreliable across browsers) ----------
 
-  function handleStaffDragStart(e, name) {
-    e.dataTransfer.setData("text/x-staff-name", name);
-    e.dataTransfer.effectAllowed = "copy";
-  }
-
-  function handleCellDragOver(e) {
+  function startDrag(e, payload) {
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    const ghost = document.createElement("div");
+    ghost.className = "dnd-ghost";
+    ghost.textContent = payload.label;
+    document.body.appendChild(ghost);
+    dragRef.current = { payload, ghost };
+    moveGhost(e.clientX, e.clientY);
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", onDragEnd);
   }
 
-  function handleHandleDragStart(e, dateISO, rowLabel) {
-    e.dataTransfer.setData("application/x-roster-move", JSON.stringify({ date: dateISO, row: rowLabel }));
-    e.dataTransfer.effectAllowed = "move";
+  function moveGhost(x, y) {
+    if (!dragRef.current) return;
+    dragRef.current.ghost.style.left = `${x}px`;
+    dragRef.current.ghost.style.top = `${y}px`;
   }
 
-  function handleCellDrop(e, targetDate, targetRow) {
-    e.preventDefault();
-    const staffName = e.dataTransfer.getData("text/x-staff-name");
-    const moveRaw = e.dataTransfer.getData("application/x-roster-move");
+  function clearHover() {
+    document.querySelectorAll(".dnd-hover").forEach((n) => n.classList.remove("dnd-hover"));
+  }
 
-    if (staffName) {
-      const value = rosterType === "shift" && targetRow === "Duty"
-        ? `${staffName} (${defaultTime})`
-        : staffName;
-      handleCellChange(targetDate, targetRow, value);
-      return;
+  function onDragMove(e) {
+    moveGhost(e.clientX, e.clientY);
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const cell = el?.closest("[data-dropcell]");
+    clearHover();
+    if (cell) cell.classList.add("dnd-hover");
+  }
+
+  function onDragEnd(e) {
+    window.removeEventListener("pointermove", onDragMove);
+    window.removeEventListener("pointerup", onDragEnd);
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const cell = el?.closest("[data-dropcell]");
+    clearHover();
+    if (dragRef.current?.ghost) document.body.removeChild(dragRef.current.ghost);
+
+    if (cell && dragRef.current) {
+      const targetDate = cell.dataset.date;
+      const targetRow = cell.dataset.row;
+      const { payload } = dragRef.current;
+      if (payload.type === "staff") {
+        const value = rosterType === "shift" && targetRow === "Duty"
+          ? `${payload.name} (${defaultTime})`
+          : payload.name;
+        addToCell(targetDate, targetRow, value);
+      } else if (payload.type === "move") {
+        moveChip(payload.date, payload.row, payload.index, targetDate, targetRow);
+      }
     }
-    if (moveRaw) {
-      const { date: srcDate, row: srcRow } = JSON.parse(moveRaw);
-      if (srcDate === targetDate && srcRow === targetRow) return;
-      setEntries((prev) => {
-        const next = { ...prev };
-        const val = next[srcDate]?.[srcRow] || "";
-        next[targetDate] = { ...next[targetDate], [targetRow]: val };
-        next[srcDate] = { ...next[srcDate], [srcRow]: "" };
-        return next;
-      });
-    }
+    dragRef.current = null;
   }
 
   const filteredArchive = savedRosters.filter((r) => {
@@ -357,7 +427,9 @@ export default function RosterEditor() {
                   <option value="dedicated">Evening Roster</option>
                 </select>
               </div>
-              <button className="secondary" onClick={() => setShowArchive(false)}>Back to editor</button>
+              {role !== "staff" && (
+                <button className="secondary" onClick={() => setShowArchive(false)}>Back to editor</button>
+              )}
             </div>
             <div className="roster-grid">
               {filteredArchive.map((r) => (
@@ -459,8 +531,7 @@ export default function RosterEditor() {
                   <div
                     className="staff-chip draggable"
                     key={s.id}
-                    draggable
-                    onDragStart={(e) => handleStaffDragStart(e, s.name)}
+                    onPointerDown={(e) => startDrag(e, { type: "staff", name: s.name, label: s.name })}
                     title="Drag onto a roster cell"
                   >
                     {s.name}
@@ -470,7 +541,10 @@ export default function RosterEditor() {
                   <span className="hint">No staff yet — add employees from Employee Master.</span>
                 )}
               </div>
-              <p className="hint">Drag a name onto any cell below to assign it. Drag a filled cell&apos;s handle (⋮⋮) to move it to another slot or date.</p>
+              <p className="hint">
+                Drag a name onto any cell to add them — a cell can hold more than one person.
+                Drag a chip already in the table to move it to another slot or date. Click the × on a chip to remove it.
+              </p>
             </section>
 
             <div className="toolbar">
@@ -503,27 +577,38 @@ export default function RosterEditor() {
                       <tr key={label} className={label.startsWith("Stand by") ? "standby-row" : ""}>
                         <th>{label}</th>
                         {days.map((d) => {
-                          const value = (entries[d.iso] && entries[d.iso][label]) || "";
+                          const list = entries[d.iso]?.[label] || [];
                           return (
-                            <td
-                              key={d.iso}
-                              onDragOver={handleCellDragOver}
-                              onDrop={(e) => handleCellDrop(e, d.iso, label)}
-                            >
-                              <div className="cell-wrap">
-                                {value && (
-                                  <span
-                                    className="drag-handle"
-                                    draggable
-                                    onDragStart={(e) => handleHandleDragStart(e, d.iso, label)}
-                                    title="Drag to move"
-                                  >⋮⋮</span>
-                                )}
+                            <td key={d.iso} data-dropcell="true" data-date={d.iso} data-row={label}>
+                              <div className="cell-multi">
+                                {list.map((val, idx) => (
+                                  <div className="cell-chip" key={idx}>
+                                    <span
+                                      className="cell-chip-drag"
+                                      onPointerDown={(e) => startDrag(e, { type: "move", date: d.iso, row: label, index: idx, label: val })}
+                                      title="Drag to move"
+                                    >{val}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeFromCell(d.iso, label, idx)}
+                                      title="Remove"
+                                    >&times;</button>
+                                  </div>
+                                ))}
                                 <input
                                   type="text"
-                                  value={value}
-                                  onChange={(e) => handleCellChange(d.iso, label, e.target.value)}
-                                  placeholder="-"
+                                  className="cell-add-input"
+                                  placeholder={list.length ? "+ add" : "-"}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      const v = e.currentTarget.value.trim();
+                                      if (v) {
+                                        addToCell(d.iso, label, v);
+                                        e.currentTarget.value = "";
+                                      }
+                                    }
+                                  }}
                                 />
                               </div>
                             </td>
@@ -536,7 +621,7 @@ export default function RosterEditor() {
               </div>
             </div>
             <p className="hint">
-              Type directly into any cell, drag a staff name onto a cell, or use &quot;Auto-fill week&quot;.
+              Type a name and press Enter to add it, drag a staff chip onto a cell, or use &quot;Auto-fill week&quot;.
               The downloaded image includes the {meta.label} heading automatically.
             </p>
           </>
@@ -575,7 +660,7 @@ export default function RosterEditor() {
                       <tr key={label} className={label.startsWith("Stand by") ? "standby-row" : ""}>
                         <th>{label}</th>
                         {generateWeek(previewRoster.start_date).map((d) => (
-                          <td key={d.iso}>{previewRoster.entries?.[d.iso]?.[label] || "-"}</td>
+                          <td key={d.iso}>{asList(previewRoster.entries?.[d.iso]?.[label]).join(", ") || "-"}</td>
                         ))}
                       </tr>
                     ))}
@@ -585,9 +670,11 @@ export default function RosterEditor() {
             </div>
             <div className="controls-row">
               <button onClick={downloadPreview}>Download as PNG</button>
-              <button className="secondary" onClick={() => loadRosterIntoEditor(previewRoster.id)}>
-                Edit this roster
-              </button>
+              {role !== "staff" && (
+                <button className="secondary" onClick={() => loadRosterIntoEditor(previewRoster.id)}>
+                  Edit this roster
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -9,29 +9,35 @@ export async function POST(request) {
   }
 
   const { username, password } = body || {};
-  const validUser = process.env.ADMIN_USERNAME;
-  const validPass = process.env.ADMIN_PASSWORD;
-  const token = process.env.SESSION_TOKEN;
 
-  if (
-    username &&
-    password &&
-    username === validUser &&
-    password === validPass
-  ) {
-    const res = NextResponse.json({ ok: true });
-    res.cookies.set("roster_session", token, {
+  const roles = [
+    {
+      role: "admin",
+      user: process.env.ADMIN_USERNAME,
+      pass: process.env.ADMIN_PASSWORD,
+      secret: process.env.ADMIN_SESSION_SECRET,
+    },
+    {
+      role: "staff",
+      user: process.env.STAFF_USERNAME,
+      pass: process.env.STAFF_PASSWORD,
+      secret: process.env.STAFF_SESSION_SECRET,
+    },
+  ];
+
+  const match = roles.find((r) => username && password && username === r.user && password === r.pass);
+
+  if (match) {
+    const res = NextResponse.json({ ok: true, role: match.role });
+    res.cookies.set("roster_session", `${match.role}:${match.secret}`, {
       httpOnly: true,
       secure: true,
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: 60 * 60 * 24 * 7,
       path: "/",
     });
     return res;
   }
 
-  return NextResponse.json(
-    { ok: false, message: "Invalid username or password" },
-    { status: 401 }
-  );
+  return NextResponse.json({ ok: false, message: "Invalid username or password" }, { status: 401 });
 }
