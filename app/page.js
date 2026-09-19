@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, Fragment } from "react";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
-import { TYPE_META, todayISO, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
+import { TYPE_META, sectionTimeLabel, todayISO, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
 import { exportNodeAsPng } from "../lib/exportImage";
 import TopNav from "../components/TopNav";
 
@@ -48,12 +48,14 @@ export default function DashboardPage() {
     const eveningToday = activeToday.filter((r) => r.roster_type === "dedicated");
 
     let peopleToday = 0;
-    let dedicatedPerson = "-", standby1 = "-", standby2 = "-";
+    let dutyPerson = "-", dedicatedPerson = "-", standby1 = "-", standby2 = "-";
 
     // Combined rosters carry both the Extend "Duty" row and the Evening rows
     // in one record, so a single pass covers everyone scheduled today.
     [...combinedToday, ...extendToday].forEach((r) => {
-      peopleToday += asList(r.entries?.[today]?.["Duty"]).length;
+      const duty = asList(r.entries?.[today]?.["Duty"]);
+      peopleToday += duty.length;
+      if (duty.length && dutyPerson === "-") dutyPerson = duty.join(", ");
     });
     [...combinedToday, ...eveningToday].forEach((r) => {
       const d = asList(r.entries?.[today]?.["Dedicated Person"]);
@@ -69,7 +71,10 @@ export default function DashboardPage() {
       peopleToday,
       extendCount: extendToday.length + combinedToday.length,
       eveningCount: eveningToday.length + combinedToday.length,
+      dutyPerson,
       dedicatedPerson,
+      standby1,
+      standby2,
       upcomingCount: upcomingCount || 0,
       totalStaff: totalStaff || 0,
     });
@@ -99,14 +104,15 @@ export default function DashboardPage() {
       <main className="app">
         <div className="dash-head">
           <h1>Today&apos;s overview</h1>
-          <span className="hint">{loading ? "Loading..." : today}</span>
+          <span className="today-badge"><span className="pulse-dot" />{loading ? "Loading..." : today}</span>
         </div>
 
         <div className="stat-grid">
           <StatCard label="People scheduled today" value={stats?.peopleToday ?? "-"} icon="👥" />
+          <StatCard label="On duty today (Extend)" value={stats?.dutyPerson ?? "-"} icon="☀️" tone="extend" isName />
+          <StatCard label="Dedicated person today (Evening)" value={stats?.dedicatedPerson ?? "-"} icon="🌙" tone="evening" isName />
           <StatCard label="Upcoming saved rosters" value={stats?.upcomingCount ?? "-"} icon="📅" />
           <StatCard label="Active staff" value={stats?.totalStaff ?? "-"} icon="🧑‍💼" />
-          <StatCard label="Dedicated person today" value={stats?.dedicatedPerson ?? "-"} icon="⭐" isName />
         </div>
 
         <div className={combinedRoster ? "roster-preview-grid single" : "roster-preview-grid"}>
@@ -161,12 +167,12 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ label, value, icon, isName }) {
+function StatCard({ label, value, icon, isName, tone }) {
   return (
-    <div className="stat-card">
+    <div className={`stat-card ${tone ? `stat-tone-${tone}` : ""}`}>
       <div className="stat-icon">{icon}</div>
       <div>
-        <div className="stat-value" style={isName ? { fontSize: 17 } : undefined}>{value}</div>
+        <div className="stat-value" style={isName ? { fontSize: 16.5 } : undefined}>{value}</div>
         <div className="stat-label">{label}</div>
       </div>
     </div>
@@ -234,6 +240,9 @@ function RosterPreviewCard({ title, roster, innerRef, onDownload, today, badgeCo
                           <tr className={`section-row section-${section.tone}`}>
                             <td colSpan={days.length + 1}>
                               <span className="section-dot" /> {section.label}
+                              {sectionTimeLabel(section, roster.default_time) && (
+                                <span className="section-time"> · {sectionTimeLabel(section, roster.default_time)}</span>
+                              )}
                             </td>
                           </tr>
                           {section.rows.map((label) => renderRow(label, `section-${section.tone}`))}

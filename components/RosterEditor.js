@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
-import { TYPE_META, TIMED_ROWS, nextMonday, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
+import { TYPE_META, TIMED_ROWS, sectionTimeLabel, nextMonday, addDaysISO, generateWeek, asList } from "../lib/dateUtils";
 import { exportNodeAsPng } from "../lib/exportImage";
 import { initials, avatarColor } from "../lib/avatar";
 import TopNav from "./TopNav";
@@ -656,6 +656,9 @@ export default function RosterEditor() {
                             <tr className={`section-row section-${section.tone}`}>
                               <td colSpan={days.length + 1}>
                                 <span className="section-dot" /> {section.label}
+                                {sectionTimeLabel(section, defaultTime) && (
+                                  <span className="section-time"> · {sectionTimeLabel(section, defaultTime)}</span>
+                                )}
                               </td>
                             </tr>
                             {section.rows.map((label) => renderEditableRow(label, `section-${section.tone}`))}
@@ -719,6 +722,9 @@ export default function RosterEditor() {
                             <tr className={`section-row section-${section.tone}`}>
                               <td colSpan={pDays.length + 1}>
                                 <span className="section-dot" /> {section.label}
+                                {sectionTimeLabel(section, previewRoster.default_time) && (
+                                  <span className="section-time"> · {sectionTimeLabel(section, previewRoster.default_time)}</span>
+                                )}
                               </td>
                             </tr>
                             {section.rows.map((label) => renderRow(label, `section-${section.tone}`))}
